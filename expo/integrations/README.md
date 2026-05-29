@@ -6,6 +6,8 @@ External assistants should push only actionable life updates into AIOS.
 
 Use a Custom GPT Action with `integrations/chatgpt-actions/openapi.yaml`.
 
+Paste `integrations/chatgpt-actions/custom-gpt-instructions.md` into the Custom GPT instructions.
+
 The GPT should call `POST /api/lifeos/intake` when the user mentions:
 
 - a task
@@ -19,6 +21,8 @@ The GPT should call `POST /api/lifeos/intake` when the user mentions:
 ## Claude
 
 Use a Claude custom connector / remote MCP server exposing the tool described in `integrations/claude-mcp/lifeos-tool.json`.
+
+Use `integrations/claude-mcp/claude-instructions.md` as the connector usage instruction.
 
 Claude should call `lifeos_intake` under the same conditions as ChatGPT.
 

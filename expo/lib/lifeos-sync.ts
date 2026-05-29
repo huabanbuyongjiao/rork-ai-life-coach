@@ -3,6 +3,8 @@ import type { LifeOSStoredIntake } from "@/lib/lifeos-api";
 const API_BASE_URL = process.env.EXPO_PUBLIC_LIFEOS_API_BASE_URL;
 const SYNC_TOKEN = process.env.EXPO_PUBLIC_LIFEOS_SYNC_TOKEN;
 
+export const LIFEOS_SYNC_BASE_URL = API_BASE_URL ?? "";
+
 export function isLifeOSSyncConfigured(): boolean {
   return !!API_BASE_URL;
 }

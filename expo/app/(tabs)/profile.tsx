@@ -17,6 +17,7 @@ import AuroraBackground from "@/components/AuroraBackground";
 import GlassCard from "@/components/GlassCard";
 import { radius, spacing, theme } from "@/constants/theme";
 import { ACTIVE_AI_PROVIDER, COACH_MODEL } from "@/lib/ai";
+import { LIFEOS_SYNC_BASE_URL } from "@/lib/lifeos-sync";
 import { useAurora } from "@/providers/AuroraProvider";
 
 const RULES = ["Today 优先", "一句话 Capture", "一次只推进一件事"];
@@ -139,6 +140,9 @@ export default function ProfileScreen() {
               </Text>
               <Text style={styles.providerText} numberOfLines={1}>
                 {externalSyncStatus}
+              </Text>
+              <Text style={styles.providerUrl} numberOfLines={1}>
+                {LIFEOS_SYNC_BASE_URL || "no endpoint"}
               </Text>
             </View>
             <Pressable
@@ -340,6 +344,12 @@ const styles = StyleSheet.create({
   providerText: {
     color: theme.textDim,
     fontSize: 12,
+    fontWeight: "600",
+    marginTop: 3,
+  },
+  providerUrl: {
+    color: theme.textFaint,
+    fontSize: 10,
     fontWeight: "600",
     marginTop: 3,
   },
