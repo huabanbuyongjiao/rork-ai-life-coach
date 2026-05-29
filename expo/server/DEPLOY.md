@@ -10,6 +10,8 @@ This server receives pushes from ChatGPT Actions and Claude MCP, then lets the m
 4. Set `LIFEOS_INTAKE_TOKEN` to a private shared secret.
 5. Deploy.
 
+The default Blueprint uses Render's free plan and ephemeral storage so we can get a public URL without adding payment information. Intakes may be lost when the service restarts. Upgrade to a paid plan with a persistent disk later when the flow is proven.
+
 After deployment, Render gives a URL like:
 
 ```text

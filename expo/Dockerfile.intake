@@ -5,7 +5,7 @@ WORKDIR /app
 COPY server ./server
 
 ENV PORT=8787
-ENV LIFEOS_INTAKES_FILE=/data/intakes.json
+ENV LIFEOS_INTAKES_FILE=/tmp/intakes.json
 
 EXPOSE 8787
 

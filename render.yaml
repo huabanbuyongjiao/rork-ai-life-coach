@@ -4,16 +4,12 @@ services:
     runtime: docker
     rootDir: expo
     dockerfilePath: ./Dockerfile.intake
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8787
       - key: LIFEOS_INTAKES_FILE
-        value: /data/intakes.json
+        value: /tmp/intakes.json
       - key: LIFEOS_INTAKE_TOKEN
         sync: false
-    disk:
-      name: ai-life-os-intakes
-      mountPath: /data
-      sizeGB: 1
