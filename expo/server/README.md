@@ -28,3 +28,9 @@ EXPO_PUBLIC_LIFEOS_SYNC_TOKEN=shared-secret
 ```
 
 For public deployment, see `server/DEPLOY.md`.
+
+Smoke test:
+
+```bash
+node server/smoke-test.mjs http://localhost:8787
+```

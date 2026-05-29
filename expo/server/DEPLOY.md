@@ -79,3 +79,17 @@ curl -X POST http://localhost:8787/api/lifeos/intake \
   -H "Content-Type: application/json" \
   -d '{"rawInput":"明天要交报告，今晚先写150字","source":"chatgpt"}'
 ```
+
+## Deployed Smoke Test
+
+After Render deploys, run:
+
+```bash
+node server/smoke-test.mjs https://YOUR_RENDER_URL YOUR_SHARED_SECRET
+```
+
+It checks:
+
+1. `GET /health`
+2. `POST /api/lifeos/intake`
+3. `GET /api/lifeos/intake`
