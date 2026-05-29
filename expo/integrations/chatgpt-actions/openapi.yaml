@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: Push important ChatGPT conversation context into AI Life OS.
 servers:
-  - url: https://YOUR_DEPLOYED_AIOS_DOMAIN
+  - url: https://ai-life-os-intake.onrender.com
 paths:
   /api/lifeos/intake:
     post:
