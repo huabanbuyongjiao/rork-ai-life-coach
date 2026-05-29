@@ -360,6 +360,47 @@ export async function coachReply(input: CoachReplyInput): Promise<string> {
   return stripReplyTag(raw);
 }
 
+const CAPTURE_SYSTEM = `You are the Capture parser for a Today-first AI Life OS.
+
+The user does NOT want a chat reply. They want to open the app and know what to do next.
+
+Convert the user's latest input into a tiny status card.
+
+Output exactly this shape, in the user's language:
+
+状态：low | normal | high
+任务：one most important task, max 14 Chinese characters or 8 English words
+下一步：one concrete next action, max 18 Chinese characters or 10 English words
+时间块：25分钟 or 45分钟
+先别做：avoid item 1 · avoid item 2
+提示：one short AI sentence, max 18 Chinese characters or 10 English words
+
+Rules:
+- No greeting.
+- No markdown headings.
+- No explanation.
+- No list beyond the six lines above.
+- Pick only ONE main task.
+- If the user is tired, choose 25分钟 and make the next action smaller.
+- If the input is vague, choose a low-friction capture action instead of asking follow-up questions.`;
+
+export async function captureReply(input: CoachReplyInput): Promise<string> {
+  const latest = input.history.slice(-6);
+  const facts = input.ctx.facts.length
+    ? `Known user context:\n- ${input.ctx.facts.slice(-6).join("\n- ")}`
+    : "Known user context: none";
+  const raw = await chatCompletion({
+    messages: [
+      { role: "system", content: CAPTURE_SYSTEM },
+      { role: "user", content: facts },
+      ...latest,
+    ],
+    temperature: 0.25,
+    max_tokens: 220,
+  });
+  return stripReplyTag(raw);
+}
+
 export type AnalysisResult = {
   facts?: string[];
   modules?: LifeModule[];

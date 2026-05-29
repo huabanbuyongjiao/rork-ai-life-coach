@@ -1,13 +1,35 @@
 /**
- * Lightweight AI client that talks to the Rork proxy's
- * OpenAI-compatible chat completions endpoint.
+ * Lightweight AI client. Local development can use the original Rork proxy,
+ * OpenAI, or Anthropic/Claude directly from .env.local.
  */
 const TOOLKIT_URL = process.env.EXPO_PUBLIC_TOOLKIT_URL;
 const SECRET_KEY = process.env.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY;
+const OPENAI_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+const ANTHROPIC_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
+const LLM_PROVIDER = process.env.EXPO_PUBLIC_LLM_PROVIDER;
 
 const CHAT_URL = `${TOOLKIT_URL}/v2/vercel/v1/chat/completions`;
+const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
-export const COACH_MODEL = "anthropic/claude-haiku-4.5";
+type Provider = "rork" | "openai" | "anthropic";
+
+function getProvider(): Provider {
+  if (LLM_PROVIDER === "openai") return "openai";
+  if (LLM_PROVIDER === "anthropic" || LLM_PROVIDER === "claude") {
+    return "anthropic";
+  }
+  return "rork";
+}
+
+export const ACTIVE_AI_PROVIDER = getProvider();
+
+export const COACH_MODEL =
+  ACTIVE_AI_PROVIDER === "openai"
+    ? process.env.EXPO_PUBLIC_OPENAI_MODEL ?? "gpt-4o-mini"
+    : ACTIVE_AI_PROVIDER === "anthropic"
+      ? process.env.EXPO_PUBLIC_ANTHROPIC_MODEL ?? "claude-3-5-haiku-latest"
+      : "anthropic/claude-haiku-4.5";
 
 export type ChatContentPart =
   | { type: "text"; text: string }
@@ -112,9 +134,44 @@ function injectRuntimeContext(messages: ChatMessage[]): ChatMessage[] {
   return out;
 }
 
+function toAnthropicText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => (part.type === "text" ? part.text : "[image omitted]"))
+    .join("\n");
+}
+
+function toAnthropicBody(params: ChatCompletionParams) {
+  const messages = injectRuntimeContext(params.messages);
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => toAnthropicText(message.content))
+    .join("\n\n");
+  const conversation = messages
+    .filter((message) => message.role !== "system")
+    .map((message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: toAnthropicText(message.content),
+    }));
+
+  return {
+    model: params.model ?? COACH_MODEL,
+    system: system || undefined,
+    messages:
+      conversation.length > 0
+        ? conversation
+        : [{ role: "user", content: "Continue." }],
+    temperature: params.temperature ?? 0.7,
+    max_tokens: params.max_tokens ?? 1200,
+  };
+}
+
 export async function chatCompletion(
   params: ChatCompletionParams
 ): Promise<string> {
+  const provider = getProvider();
+  const useOpenAI = provider === "openai";
+  const useAnthropic = provider === "anthropic";
   const body = {
     model: params.model ?? COACH_MODEL,
     messages: injectRuntimeContext(params.messages),
@@ -122,7 +179,15 @@ export async function chatCompletion(
     max_tokens: params.max_tokens ?? 1200,
   };
 
-  if (!TOOLKIT_URL || !SECRET_KEY) {
+  if (useOpenAI && !OPENAI_KEY) {
+    throw new Error("AI 服务未配置：缺少 EXPO_PUBLIC_OPENAI_API_KEY");
+  }
+
+  if (useAnthropic && !ANTHROPIC_KEY) {
+    throw new Error("AI 服务未配置：缺少 EXPO_PUBLIC_ANTHROPIC_API_KEY");
+  }
+
+  if (!useOpenAI && !useAnthropic && (!TOOLKIT_URL || !SECRET_KEY)) {
     throw new Error(
       "AI 服务未配置：缺少 EXPO_PUBLIC_TOOLKIT_URL 或 EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY"
     );
@@ -135,13 +200,25 @@ export async function chatCompletion(
     try {
       const ctl = new AbortController();
       const tm = setTimeout(() => ctl.abort(), 30000);
-      const res = await fetch(CHAT_URL, {
+      const url = useAnthropic
+        ? ANTHROPIC_MESSAGES_URL
+        : useOpenAI
+          ? OPENAI_CHAT_URL
+          : CHAT_URL;
+      const headers: Record<string, string> = useAnthropic
+        ? {
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_KEY ?? "",
+            "anthropic-version": "2023-06-01",
+          }
+        : {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${useOpenAI ? OPENAI_KEY : SECRET_KEY}`,
+          };
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${SECRET_KEY}`,
-        },
-        body: JSON.stringify(body),
+        headers,
+        body: JSON.stringify(useAnthropic ? toAnthropicBody(params) : body),
         signal: ctl.signal,
       }).finally(() => clearTimeout(tm));
 
@@ -162,8 +239,13 @@ export async function chatCompletion(
 
       const json = (await res.json()) as {
         choices?: { message?: { content?: string } }[];
+        content?: { type?: string; text?: string }[];
       };
-      const content = json.choices?.[0]?.message?.content ?? "";
+      const content = useAnthropic
+        ? (json.content ?? [])
+            .map((part) => (part.type === "text" ? part.text ?? "" : ""))
+            .join("")
+        : json.choices?.[0]?.message?.content ?? "";
       if (!content && attempt < 1) {
         lastErr = new Error("AI 返回为空");
         await wait(500 * Math.pow(2, attempt));

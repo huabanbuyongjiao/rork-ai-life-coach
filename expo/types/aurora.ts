@@ -21,6 +21,8 @@ export type LifeModule = {
 export type ScheduleItem = {
   id: string;
   time: string;
+  startTime?: string;
+  endTime?: string;
   title: string;
   kind: "study" | "work" | "sleep" | "health" | "break" | "other";
   done?: boolean;
@@ -32,7 +34,10 @@ export type ScheduleItem = {
    * history on the original date. */
   completedAt?: number;
   /** Lifecycle status. Derived from `done` for backwards compat. */
-  status?: "pending" | "done";
+  status?: "pending" | "done" | "skipped" | "delayed";
+  priority?: "low" | "medium" | "high";
+  minimumAction?: string;
+  reason?: string;
   /** When true, AI reconcile / AI edit will skip this item. Set automatically
    * for items imported from iOS calendar / reminders, and can be toggled
    * manually per item. */
@@ -45,6 +50,16 @@ export type ScheduleItem = {
   iosId?: string;
   /** Type of the iOS-side record. Only reminders support completion sync. */
   iosType?: "event" | "reminder";
+};
+
+export type TodayFocus = {
+  status: "low" | "normal" | "high";
+  task: string;
+  nextAction: string;
+  duration: 25 | 45;
+  avoid: string[];
+  tip: string;
+  updatedAt: number;
 };
 
 export type AgentTask = {

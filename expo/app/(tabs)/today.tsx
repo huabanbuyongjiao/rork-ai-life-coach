@@ -7,6 +7,8 @@ import {
   Briefcase,
   CalendarDays,
   CalendarPlus,
+  Bell,
+  BellOff,
   ChevronLeft,
   ChevronRight,
   Check,
@@ -14,6 +16,8 @@ import {
   ExternalLink,
   Heart,
   Inbox,
+  Lock,
+  LockOpen,
   MessageCircle,
   Moon,
   Plus,
@@ -25,6 +29,8 @@ import {
   Trash2,
   Wand2,
   X,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -48,6 +54,7 @@ import AuroraBackground from "@/components/AuroraBackground";
 import GlassCard from "@/components/GlassCard";
 import Markdown from "@/components/Markdown";
 import ModuleCard from "@/components/ModuleCard";
+import TodayHud, { type TodayTimelineItem } from "@/components/TodayHud";
 import { theme } from "@/constants/theme";
 import {
   addManyToCalendar,
@@ -59,15 +66,12 @@ import { getGreeting, suggestedSleepText } from "@/lib/timeUtils";
 import { useAurora } from "@/providers/AuroraProvider";
 import { computeNow, computeNowAI, type NowNeedKey } from "@/lib/nowEngine";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, BellOff, Lock, LockOpen } from "lucide-react-native";
-import {
-  cancelAllReminders,
-  ensureNotificationPermission,
-  rescheduleAll,
-} from "@/lib/notifications";
 import { useGmail } from "@/providers/GmailProvider";
-import type { Goal, LifeModule, ScheduleItem } from "@/types/aurora";
-import { ChevronDown, ChevronUp } from "lucide-react-native";
+import type { Goal, ScheduleItem } from "@/types/aurora";
+
+const cancelAllReminders = async (): Promise<void> => {};
+const ensureNotificationPermission = async (): Promise<boolean> => false;
+const rescheduleAll = async (_items: ScheduleItem[]): Promise<number> => 0;
 
 function toISODate(d: Date): string {
   const y = d.getFullYear();
@@ -222,7 +226,7 @@ const PROVIDER_TUTORIAL_LABEL: Record<MailProviderId, string> = {
   "163": "生成 163 授权密码",
 };
 
-const MAIL_PROVIDERS: ReadonlyArray<{
+const MAIL_PROVIDERS: readonly {
   id: MailProviderId;
   name: string;
   color: string;
@@ -232,7 +236,7 @@ const MAIL_PROVIDERS: ReadonlyArray<{
   passwordLabel: string;
   passwordHint: string;
   passwordUrl: string;
-}> = [
+}[] = [
   {
     id: "icloud",
     name: "iCloud 邮箱",
@@ -279,6 +283,8 @@ const MAIL_PROVIDERS: ReadonlyArray<{
   },
 ];
 
+const ENABLE_TODAY_HUD = true;
+
 export default function TodayScreen() {
   const router = useRouter();
   const {
@@ -304,6 +310,8 @@ export default function TodayScreen() {
     toggleLockScheduleItem,
     lifeStates,
     logLifeState,
+    todayFocus,
+    setChatDraft,
   } = useAurora();
   const [editingModule, setEditingModule] = useState<
     { id: string; title: string; summary: string } | null
@@ -529,6 +537,116 @@ export default function TodayScreen() {
     return () => clearTimeout(t);
   }, [lastImportIds]);
 
+  const primaryAction = useMemo((): {
+    title: string;
+    reason: string;
+    duration: 25 | 45;
+    status: "low" | "normal" | "high";
+    nextAction: string;
+    avoid: string[];
+    tip: string;
+    item?: ScheduleItem;
+    need: NowNeedKey | null;
+  } => {
+    if (todayFocus) {
+      return {
+        title: todayFocus.task,
+        reason: "来自最近一次 Capture。",
+        duration: todayFocus.duration,
+        status: todayFocus.status,
+        nextAction: todayFocus.nextAction,
+        avoid: todayFocus.avoid,
+        tip: todayFocus.tip,
+        need: null,
+      };
+    }
+    const fallback = filteredSchedule[0];
+    const title = nowSuggestion?.title ?? fallback?.title ?? "捕捉你现在的状态";
+    const reason =
+      nowSuggestion?.reason ??
+      (fallback
+        ? "这是今天最靠前的未完成事项。"
+        : "先用一句话记录你现在的能量和想推进的事。");
+    const estMin = nowSuggestion?.estMin ?? (fallback ? 25 : 10);
+    const duration = estMin > 25 ? 45 : 25;
+    const status =
+      nowSuggestion?.kind === "need" && nowSuggestion.need === "sleep"
+        ? "low"
+        : nowSuggestion?.kind === "need"
+          ? "normal"
+          : filteredSchedule.length > 2
+            ? "high"
+            : "normal";
+
+    return {
+      title,
+      reason,
+      duration,
+      status,
+      nextAction:
+        fallback || nowSuggestion
+          ? "现在开始第一步。不要重新规划，完成这一张卡。"
+          : "说一句：我现在感觉如何，想推进什么。",
+      avoid: ["开新功能", "整理复杂列表"],
+      tip: "",
+      item: nowSuggestion?.kind === "task" ? nowSuggestion.item : fallback,
+      need: nowSuggestion?.kind === "need" ? nowSuggestion.need : null,
+    };
+  }, [filteredSchedule, nowSuggestion, todayFocus]);
+
+  const todayTimeline = useMemo<TodayTimelineItem[]>(
+    () =>
+      filteredSchedule.slice(0, 6).map((item) => ({
+        id: item.id,
+        time: item.time,
+        title: item.title,
+        status: item.done ? "done" : item.status ?? "pending",
+        minimumAction:
+          item.minimumAction ??
+          (item.id === primaryAction.item?.id ? primaryAction.nextAction : undefined),
+      })),
+    [filteredSchedule, primaryAction.item?.id, primaryAction.nextAction]
+  );
+
+  const completePrimary = useCallback(() => {
+    if (primaryAction.item) {
+      toggleDone(primaryAction.item);
+      return;
+    }
+    if (primaryAction.need) {
+      logLifeState(primaryAction.need);
+      return;
+    }
+    router.push("/");
+  }, [logLifeState, primaryAction.item, primaryAction.need, router, toggleDone]);
+
+  const postponePrimary = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.selectionAsync().catch(() => {});
+    router.push("/");
+  }, [router]);
+
+  const replanToday = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.selectionAsync().catch(() => {});
+    setChatDraft(
+      "根据当前时间和我的状态，重新规划今天剩余时间。只输出 Now Card 和 Today Timeline。",
+    );
+    router.push("/");
+  }, [router, setChatDraft]);
+
+  if (ENABLE_TODAY_HUD) {
+    return (
+      <TodayHud
+        dateLabel={dateStr}
+        action={primaryAction}
+        timeline={todayTimeline}
+        onComplete={completePrimary}
+        onPostpone={postponePrimary}
+        onReplan={replanToday}
+        onCapture={() => router.push("/")}
+      />
+    );
+  }
+
   return (
     <View style={styles.root}>
       <AuroraBackground />
@@ -564,7 +682,7 @@ export default function TodayScreen() {
                       onPress={() => {
                         if (Platform.OS !== "web")
                           Haptics.selectionAsync().catch(() => {});
-                        router.push("/goals");
+                        router.push("/");
                       }}
                       style={({ pressed }) => [
                         styles.goalChip,
@@ -591,7 +709,7 @@ export default function TodayScreen() {
                 })}
                 {goals.length > 3 && (
                   <Pressable
-                    onPress={() => router.push("/goals")}
+                    onPress={() => router.push("/")}
                     style={({ pressed }) => [
                       styles.goalChipMore,
                       pressed && { opacity: 0.7 },
@@ -713,17 +831,13 @@ export default function TodayScreen() {
           {/* Modules */}
           <SectionHeader
             title="生活模块"
-            subtitle={
-              modules.length === 0
-                ? "和 Aurora 聊聊你的近况，这里会自动出现"
-                : "点击查看 · 由对话自动生成"
-            }
+            subtitle={modules.length === 0 ? "Capture 一句话后，这里会自动出现" : "点击查看 · 由对话自动生成"}
           />
 
           {modules.length === 0 ? (
             <EmptyState
               onPress={() => router.push("/")}
-              label="去和 Aurora 聊一聊"
+              label="去 Capture 一句话"
             />
           ) : (
             <View style={styles.gridCol}>
@@ -1495,8 +1609,8 @@ export default function TodayScreen() {
           {facts.length > 0 && (
             <>
               <SectionHeader
-                title="Aurora 对你的理解"
-                subtitle="长按编辑 · 左滑删除 · Aurora 会从对话中自动修正"
+                title="系统理解"
+                subtitle="长按编辑 · 左滑删除 · 只保留影响 Today 的信息"
               />
               <View style={{ gap: 8 }}>
                 {facts.slice(-8).map((f, i) => {
@@ -1808,7 +1922,7 @@ export default function TodayScreen() {
                       <Text style={styles.saveText}>
                         {editMode === "ai" &&
                         schedule.find((s) => s.id === editingItem?.id)
-                          ? "让 Aurora 修改"
+                          ? "让系统修改"
                           : "保存"}
                       </Text>
                     )}
@@ -1883,7 +1997,7 @@ export default function TodayScreen() {
                     {addScheduleFromAI.isPending ? (
                       <ActivityIndicator size="small" color={theme.bg} />
                     ) : (
-                      <Text style={styles.saveText}>让 Aurora 添加</Text>
+                      <Text style={styles.saveText}>添加到 Today</Text>
                     )}
                   </Pressable>
                 </View>
@@ -2104,7 +2218,7 @@ export default function TodayScreen() {
                       <Text style={styles.detailHeading}>相关安排</Text>
                       {related.length === 0 ? (
                         <Text style={styles.detailEmpty}>
-                          还没有具体安排 · 去和 Aurora 聊聊详情
+                          还没有具体安排 · 去 Capture 一句话
                         </Text>
                       ) : (
                         <View style={{ gap: 6, marginTop: 2 }}>
@@ -2663,7 +2777,7 @@ export default function TodayScreen() {
                       <ActivityIndicator size="small" color={theme.bg} />
                     ) : (
                       <Text style={styles.saveText}>
-                        {factEditMode === "ai" ? "让 Aurora 修改" : "保存"}
+                        {factEditMode === "ai" ? "让系统修改" : "保存"}
                       </Text>
                     )}
                   </Pressable>

@@ -1,10 +1,6 @@
 import * as Clipboard from "expo-clipboard";
-import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
-import * as ImagePicker from "expo-image-picker";
 import { Image as ExpoImage } from "expo-image";
-import { useRouter } from "expo-router";
 import {
   CalendarPlus,
   Check,
@@ -12,11 +8,8 @@ import {
   Copy,
   FileText,
   History,
-  ImagePlus,
-  Paperclip,
   RotateCcw,
   Send,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react-native";
@@ -40,6 +33,9 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Swipeable } from "react-native-gesture-handler";
 
 import AuroraBackground from "@/components/AuroraBackground";
+import CaptureResultCard, {
+  parseCaptureCard,
+} from "@/components/CaptureResultCard";
 import GlassCard from "@/components/GlassCard";
 import Markdown from "@/components/Markdown";
 import ThinkingDots from "@/components/ThinkingDots";
@@ -47,21 +43,6 @@ import { theme } from "@/constants/theme";
 import { parseScheduleFromText } from "@/lib/coach";
 import { useAurora } from "@/providers/AuroraProvider";
 import type { ChatFileAttachment, ChatMessageRecord, ScheduleItem } from "@/types/aurora";
-
-const TEXT_MIME_PATTERNS = [
-  /^text\//,
-  /json$/,
-  /xml$/,
-  /javascript$/,
-  /typescript$/,
-  /csv$/,
-  /markdown$/,
-  /yaml$/,
-];
-
-function isTextLike(mime: string): boolean {
-  return TEXT_MIME_PATTERNS.some((p) => p.test(mime));
-}
 
 /**
  * Heuristic: does this assistant reply contain content worth dropping into the
@@ -103,7 +84,6 @@ function looksPlannable(text: string): boolean {
 
 export default function CoachScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const { messages, sendMessage, clearChat, sessions, restoreSession, deleteSession, chatDraft, setChatDraft } = useAurora();
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const [text, setText] = useState<string>("");
@@ -141,70 +121,6 @@ export default function CoachScreen() {
     };
   }, []);
 
-  const pickImage = useCallback(async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
-        allowsMultipleSelection: true,
-        selectionLimit: 9,
-      });
-      if (result.canceled) return;
-      const uris: string[] = [];
-      for (const asset of result.assets) {
-        const base64 = asset.base64;
-        if (!base64) continue;
-        const mime = asset.mimeType ?? "image/jpeg";
-        uris.push(`data:${mime};base64,${base64}`);
-      }
-      if (uris.length === 0) return;
-      setPendingImages((prev) => [...prev, ...uris]);
-      if (Platform.OS !== "web") {
-        Haptics.selectionAsync().catch(() => {});
-      }
-    } catch (err) {
-      console.warn("[pickImage]", err);
-    }
-  }, []);
-
-  const pickFile = useCallback(async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: true,
-        multiple: true,
-        type: "*/*",
-      });
-      if (result.canceled) return;
-      const assets = result.assets ?? [];
-      if (assets.length === 0) return;
-      const files: ChatFileAttachment[] = [];
-      for (const asset of assets) {
-        const mime = asset.mimeType ?? "application/octet-stream";
-        const size = asset.size ?? 0;
-        let textPreview: string | undefined;
-        if (isTextLike(mime) && size > 0 && size < 200_000 && Platform.OS !== "web") {
-          try {
-            const raw = await FileSystem.readAsStringAsync(asset.uri);
-            textPreview = raw.slice(0, 8000);
-          } catch (err) {
-            console.warn("[pickFile] read text", err);
-          }
-        }
-        files.push({
-          name: asset.name,
-          size,
-          mimeType: mime,
-          textPreview,
-        });
-      }
-      setPendingFiles((prev) => [...prev, ...files]);
-      if (Platform.OS !== "web") Haptics.selectionAsync().catch(() => {});
-    } catch (err) {
-      console.warn("[pickFile]", err);
-    }
-  }, []);
-
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed && pendingImages.length === 0 && pendingFiles.length === 0)
@@ -230,7 +146,10 @@ export default function CoachScreen() {
   const data = useMemo<Row[]>(() => {
     const rows: Row[] = [];
     let lastDay = "";
-    for (const m of messages) {
+    const visibleMessages = messages
+      .filter((m) => m.id !== "welcome")
+      .slice(-2);
+    for (const m of visibleMessages) {
       const d = new Date(m.createdAt);
       const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
       if (dayKey !== lastDay) {
@@ -257,10 +176,6 @@ export default function CoachScreen() {
     clearChat();
   }, [clearChat]);
 
-  const onOpenGoals = useCallback(() => {
-    router.push("/goals");
-  }, [router]);
-
   // When the keyboard is up, KeyboardAvoidingView already lifts the composer.
   // When closed, we need to clear the tab-bar area beneath.
   const composerBottomPad = keyboardUp
@@ -272,48 +187,27 @@ export default function CoachScreen() {
       <AuroraBackground />
       <SafeAreaView style={styles.flex} edges={["top"]}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.brandOrb}>
-              <View style={styles.brandOrbInner} />
-            </View>
-            <View>
-              <Text style={styles.headerTitle}>Aurora</Text>
-              <Text style={styles.headerSub}>你的 AI 生活教练</Text>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <View style={styles.brandOrb}>
+                <View style={styles.brandOrbInner} />
+              </View>
+              <View>
+              <Text style={styles.headerTitle}>Capture</Text>
+              <Text style={styles.headerSub}>一句话 → Today 卡片</Text>
             </View>
           </View>
-          <View style={styles.headerActions}>
-            <Pressable
-              onPress={onOpenGoals}
-              style={({ pressed }) => [
-                styles.iconBtn,
-                pressed && { opacity: 0.6 },
-              ]}
-              hitSlop={8}
-            >
-              <Sparkles size={18} color={theme.textMuted} />
-            </Pressable>
-            <Pressable
-              onPress={() => setHistoryOpen(true)}
-              style={({ pressed }) => [
-                styles.iconBtn,
-                pressed && { opacity: 0.6 },
-              ]}
-              hitSlop={8}
-            >
-              <History size={18} color={theme.textMuted} />
-            </Pressable>
-            <Pressable
-              onPress={onClear}
-              style={({ pressed }) => [
-                styles.iconBtn,
-                pressed && { opacity: 0.6 },
-              ]}
-              hitSlop={8}
-            >
-              <RotateCcw size={18} color={theme.textMuted} />
-            </Pressable>
-          </View>
+          <Pressable
+            onPress={() => setHistoryOpen(true)}
+            style={({ pressed }) => [
+              styles.manageBtn,
+              pressed && { opacity: 0.6 },
+            ]}
+            hitSlop={8}
+          >
+            <History size={13} color={theme.textDim} />
+            <Text style={styles.manageText}>Log</Text>
+          </Pressable>
         </View>
 
         <KeyboardAvoidingView
@@ -335,6 +229,7 @@ export default function CoachScreen() {
               gap: 12,
             }}
             ListFooterComponent={isSending ? <TypingBubble /> : null}
+            ListEmptyComponent={<CaptureEmptyState onPick={setText} />}
             onContentSizeChange={() =>
               listRef.current?.scrollToEnd({ animated: true })
             }
@@ -397,30 +292,10 @@ export default function CoachScreen() {
               </View>
             )}
             <GlassCard radius={26} intensity={40} style={styles.composer}>
-              <Pressable
-                onPress={pickImage}
-                style={({ pressed }) => [
-                  styles.attachBtn,
-                  pressed && { opacity: 0.5 },
-                ]}
-                hitSlop={8}
-              >
-                <ImagePlus size={20} color={theme.textMuted} />
-              </Pressable>
-              <Pressable
-                onPress={pickFile}
-                style={({ pressed }) => [
-                  styles.attachBtn,
-                  pressed && { opacity: 0.5 },
-                ]}
-                hitSlop={8}
-              >
-                <Paperclip size={18} color={theme.textMuted} />
-              </Pressable>
               <TextInput
                 value={text}
                 onChangeText={setText}
-                placeholder="和 Aurora 说点什么…"
+                placeholder="一句话描述现在的状态…"
                 placeholderTextColor={theme.textDim}
                 style={styles.input}
                 multiline
@@ -458,14 +333,27 @@ export default function CoachScreen() {
           <Pressable style={{ width: "100%" }}>
             <GlassCard radius={24} intensity={50} style={styles.historyCard}>
               <View style={styles.historyHeader}>
-                <Text style={styles.historyTitle}>历史对话</Text>
-                <Pressable onPress={() => setHistoryOpen(false)} hitSlop={8}>
-                  <X size={18} color={theme.textMuted} />
-                </Pressable>
+                <Text style={styles.historyTitle}>Capture Log</Text>
+                <View style={styles.historyHeaderActions}>
+                  <Pressable
+                    onPress={onClear}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.historyGhostBtn,
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <RotateCcw size={13} color={theme.textDim} />
+                    <Text style={styles.historyGhostText}>清空</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setHistoryOpen(false)} hitSlop={8}>
+                    <X size={18} color={theme.textMuted} />
+                  </Pressable>
+                </View>
               </View>
               {sessions.length === 0 ? (
                 <Text style={styles.historyEmpty}>
-                  还没有存档的对话。点右上角的刷新按钮可以把当前对话存起来。
+                  还没有 Capture 记录。
                 </Text>
               ) : (
                 <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
@@ -570,17 +458,14 @@ function QuickSuggestions({
 }) {
   const starters = isNewUser
     ? [
-        "我是一名大学生",
-        "我想减肥",
-        "我在准备面试",
-        "帮我规划今天",
-        "我最近很焦虑",
+        "我刚回家，有点累，但想推进 AI 项目",
+        "我现在状态还行，想专注 25 分钟",
+        "今晚别刷手机，先完成一个小任务",
       ]
     : [
-        "今天计划怎么安排？",
-        "帮我梳理下思路",
-        "我该休息一下了吗？",
-        "对我的理解还准吗？",
+        "我现在有点低能量，只想做最小一步",
+        "我状态正常，帮我选一个 25 分钟动作",
+        "我脑子有点乱，只保留最重要的一件事",
       ];
   return (
     <View style={styles.suggestRow}>
@@ -606,6 +491,54 @@ function QuickSuggestions({
           </Pressable>
         ))}
       </ScrollView>
+    </View>
+  );
+}
+
+function CaptureEmptyState({ onPick }: { onPick: (t: string) => void }) {
+  return (
+    <View style={styles.captureEmpty}>
+      <GlassCard radius={28} variant="focus" style={styles.capturePanel}>
+        <View style={styles.captureTopLine}>
+          <Text style={styles.captureKicker}>STATE INPUT</Text>
+          <Text style={styles.captureLimit}>1 句</Text>
+        </View>
+        <Text style={styles.captureTitle}>现在是什么状态？</Text>
+        <Text style={styles.captureSub}>不用整理。直接说当前能量、想推进的事、先别做什么。</Text>
+        <View style={styles.stateGrid}>
+          {[
+            { label: "LOW", text: "低能量", color: theme.ai },
+            { label: "NORMAL", text: "可行动", color: theme.amber },
+            { label: "HIGH", text: "偏混乱", color: theme.rose },
+          ].map((item) => (
+            <View key={item.label} style={styles.stateTile}>
+              <View style={[styles.stateDot, { backgroundColor: item.color }]} />
+              <Text style={[styles.stateTileLabel, { color: item.color }]}>
+                {item.label}
+              </Text>
+              <Text style={styles.stateTileText}>{item.text}</Text>
+            </View>
+          ))}
+        </View>
+        <View style={styles.captureExamples}>
+          {[
+            "我有点累，但想推进项目",
+            "状态不错，先做最重要的一步",
+            "今晚不要刷短视频",
+          ].map((item) => (
+            <Pressable
+              key={item}
+              onPress={() => onPick(item)}
+              style={({ pressed }) => [
+                styles.captureExample,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={styles.captureExampleText}>{item}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </GlassCard>
     </View>
   );
 }
@@ -644,6 +577,7 @@ function MessageBubble({ message }: { message: ChatMessageRecord }) {
   const copyable = !!message.text &&
     message.text !== "(image)" &&
     message.text !== "(file)";
+  const captureCard = !isUser ? parseCaptureCard(message.text) : null;
 
   const renderTimestamp = useCallback(
     (progress: Animated.AnimatedInterpolation<number>) => {
@@ -788,9 +722,13 @@ function MessageBubble({ message }: { message: ChatMessageRecord }) {
     >
       <View style={styles.assistantDot} />
       <View style={{ flex: 1, minWidth: 0 }}>
-        <GlassCard radius={18} intensity={28} variant="elevated" style={styles.assistantBubble}>
-          <Markdown text={message.text} color={theme.text} selectable />
-        </GlassCard>
+        {captureCard ? (
+          <CaptureResultCard text={message.text} />
+        ) : (
+          <GlassCard radius={18} intensity={28} variant="elevated" style={styles.assistantBubble}>
+            <Markdown text={message.text} color={theme.text} selectable />
+          </GlassCard>
+        )}
         <View style={styles.assistantActionsRow}>
           {copyable && (
             <Pressable
@@ -928,53 +866,57 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
+    paddingTop: 14,
+    paddingBottom: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   brandOrb: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: theme.surfaceStrong,
+    backgroundColor: "rgba(134,181,226,0.10)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.borderStrong,
   },
   brandOrbInner: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
     backgroundColor: theme.ai,
   },
   headerTitle: {
     color: theme.text,
-    fontSize: 17,
-    fontWeight: "600",
-    letterSpacing: -0.25,
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: 0,
   },
   headerSub: {
-    color: theme.textFaint,
-    fontSize: 9.5,
-    letterSpacing: 1.6,
-    textTransform: "uppercase",
+    color: theme.textMuted,
+    fontSize: 12,
+    letterSpacing: 0,
     fontWeight: "600",
     marginTop: 3,
   },
-  headerActions: { flexDirection: "row", gap: 6 },
-  iconBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+  manageBtn: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.025)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.border,
+  },
+  manageText: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: "700",
   },
   userRow: { width: "100%", alignItems: "flex-end" },
   userBubble: {
@@ -1038,9 +980,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.15)",
   },
   composerWrap: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    backgroundColor: theme.bg,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: "rgba(8,9,12,0.94)",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.borderFaint,
     zIndex: 10,
@@ -1097,10 +1039,10 @@ const styles = StyleSheet.create({
   },
   composer: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    gap: 2,
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 10,
   },
   attachBtn: {
     width: 36,
@@ -1112,11 +1054,11 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     color: theme.text,
-    fontSize: 15,
-    lineHeight: 20,
-    paddingHorizontal: 6,
+    fontSize: 16,
+    lineHeight: 22,
+    paddingHorizontal: 0,
     paddingVertical: 10,
-    maxHeight: 120,
+    maxHeight: 88,
   },
   sendBtn: {
     width: 36,
@@ -1132,11 +1074,11 @@ const styles = StyleSheet.create({
     borderColor: theme.border,
   },
   sendBtnActive: {
-    backgroundColor: theme.aiSoft,
+    backgroundColor: theme.ai,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.aiStroke,
+    borderColor: theme.ai,
   },
-  suggestRow: { marginBottom: 10, marginLeft: -4, backgroundColor: theme.bg },
+  suggestRow: { marginBottom: 10, marginLeft: -4 },
   suggestChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -1146,6 +1088,103 @@ const styles = StyleSheet.create({
     borderColor: theme.border,
   },
   suggestText: { color: theme.textMuted, fontSize: 12, fontWeight: "500", letterSpacing: -0.1 },
+  captureEmpty: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    paddingVertical: 24,
+  },
+  capturePanel: {
+    padding: 22,
+    gap: 14,
+    overflow: "hidden",
+  },
+  captureTopLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  captureKicker: {
+    color: theme.amber,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.4,
+  },
+  captureLimit: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+  },
+  captureTitle: {
+    color: theme.text,
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: "800",
+    letterSpacing: 0,
+  },
+  captureSub: {
+    color: theme.textMuted,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: "600",
+    maxWidth: 280,
+  },
+  stateGrid: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
+  },
+  stateTile: {
+    flex: 1,
+    minHeight: 82,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+    justifyContent: "space-between",
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+  },
+  stateDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  stateTileLabel: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+  stateTileText: {
+    color: theme.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  captureExamples: {
+    gap: 8,
+    marginTop: 2,
+  },
+  captureExample: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+  },
+  captureExampleText: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
   timeReveal: {
     justifyContent: "center",
     alignItems: "center",
@@ -1171,6 +1210,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 4,
+  },
+  historyHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  historyGhostBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.035)",
+  },
+  historyGhostText: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: "700",
   },
   historyTitle: { color: theme.text, fontSize: 18, fontWeight: "700" },
   historyEmpty: { color: theme.textMuted, fontSize: 13, lineHeight: 19, paddingVertical: 12 },

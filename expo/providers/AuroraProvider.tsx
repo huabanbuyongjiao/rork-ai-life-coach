@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   analyzeConversation,
+  captureReply,
   coachReply,
   dedupeAgents,
   stripReplyTag,
@@ -20,6 +21,12 @@ import {
   runAgentTask,
 } from "@/lib/coach";
 import type { ChatMessage } from "@/lib/ai";
+import {
+  buildTodayPlanFromFocus,
+  createLifeOSIntake,
+  mergeTodayPlanIntoSchedule,
+} from "@/lib/lifeos";
+import { fetchExternalIntakes, isLifeOSSyncConfigured } from "@/lib/lifeos-sync";
 import type { LifeStates, NowNeedKey } from "@/lib/nowEngine";
 import type {
   AgentTask,
@@ -30,6 +37,7 @@ import type {
   LifeModule,
   Milestone,
   ScheduleItem,
+  TodayFocus,
   UserContext,
 } from "@/types/aurora";
 
@@ -55,6 +63,10 @@ type PersistedState = {
   agentChats: Record<string, ChatMessageRecord[]>;
   /** Self-reported physical states for the Now Engine. */
   lifeStates: LifeStates;
+  /** Latest Capture result that should drive the Today HUD. */
+  todayFocus: TodayFocus | null;
+  /** External ChatGPT / Claude intake ids already merged locally. */
+  externalIntakeIds: string[];
 };
 
 const INITIAL_STATE: PersistedState = {
@@ -69,13 +81,15 @@ const INITIAL_STATE: PersistedState = {
   blockedAgentTopics: [],
   agentChats: {},
   lifeStates: {},
+  todayFocus: null,
+  externalIntakeIds: [],
 };
 
 const WELCOME: ChatMessageRecord = {
   id: "welcome",
   role: "assistant",
   text:
-    "你好，我是 Aurora — 你的 AI 生活教练。\n\n告诉我你最近在忙什么、想达成什么目标，或者你现在的感受。我会一边聊天一边为你建立专属的生活模块，并在合适的时候提醒你休息、睡觉，或者直接帮你完成一些事情。",
+    "说一句你现在的状态。我会把它压缩成 Today 的主任务、下一步和时间块。",
   createdAt: Date.now(),
 };
 
@@ -85,9 +99,44 @@ function uid(prefix: string = "m"): string {
     .slice(2, 8)}`;
 }
 
+function parseTodayFocus(text: string): TodayFocus | null {
+  const read = (label: string): string => {
+    const line = text
+      .split(/\n+/)
+      .find((item) => item.trim().startsWith(`${label}：`));
+    return line?.split("：").slice(1).join("：").trim() ?? "";
+  };
+  const rawStatus = read("状态").toLowerCase();
+  const status: TodayFocus["status"] = rawStatus.includes("low")
+    ? "low"
+    : rawStatus.includes("high")
+      ? "high"
+      : "normal";
+  const task = read("任务");
+  const nextAction = read("下一步");
+  if (!task || !nextAction) return null;
+  const rawDuration = read("时间块");
+  const duration: TodayFocus["duration"] = rawDuration.includes("45") ? 45 : 25;
+  const avoid = read("先别做")
+    .split(/[·,，、/]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  return {
+    status,
+    task,
+    nextAction,
+    duration,
+    avoid,
+    tip: read("提示"),
+    updatedAt: Date.now(),
+  };
+}
+
 export const [AuroraProvider, useAurora] = createContextHook(() => {
   const queryClient = useQueryClient();
   const [hydrated, setHydrated] = useState<boolean>(false);
+  const [externalSyncStatus, setExternalSyncStatus] = useState<string>("未同步");
   const [state, setState] = useState<PersistedState>({
     ...INITIAL_STATE,
     messages: [WELCOME],
@@ -130,6 +179,100 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
     };
   }, []);
 
+  const userContext: UserContext = useMemo(
+    () => ({ facts: state.facts, modules: state.modules }),
+    [state.facts, state.modules]
+  );
+
+  const syncExternalIntakes = useCallback(async (): Promise<number> => {
+    if (!isLifeOSSyncConfigured()) {
+      setExternalSyncStatus("未配置外部 intake URL");
+      return 0;
+    }
+    try {
+      setExternalSyncStatus("同步中…");
+      const intakes = await fetchExternalIntakes();
+      const fresh = intakes
+        .filter((item) => !state.externalIntakeIds.includes(item.id))
+        .slice(0, 10)
+        .reverse();
+      if (fresh.length === 0) {
+        setExternalSyncStatus("没有新的外部输入");
+        return 0;
+      }
+
+      const applied: {
+        id: string;
+        userMsg: ChatMessageRecord;
+        assistantMsg: ChatMessageRecord;
+        focus: TodayFocus;
+      }[] = [];
+      for (const item of fresh) {
+        const text = [
+          item.request.rawInput,
+          item.request.conversationSummary
+            ? `\n\n上下文：${item.request.conversationSummary}`
+            : "",
+        ].join("");
+        const reply = await captureReply({
+          ctx: userContext,
+          history: [{ role: "user", content: text }],
+        });
+        const assistantText = stripReplyTag(reply);
+        const focus = parseTodayFocus(assistantText);
+        if (!focus) continue;
+        applied.push({
+          id: item.id,
+          focus,
+          userMsg: {
+            id: uid("ext"),
+            role: "user",
+            text: `[${item.request.source ?? "external"}] ${item.request.rawInput}`,
+            createdAt: Date.parse(item.receivedAt) || Date.now(),
+          },
+          assistantMsg: {
+            id: uid("a"),
+            role: "assistant",
+            text: assistantText,
+            createdAt: Date.now(),
+          },
+        });
+      }
+      if (applied.length === 0) {
+        setExternalSyncStatus("外部输入未解析成 Today");
+        return 0;
+      }
+      setState((prev) => {
+        let schedule = prev.schedule;
+        for (const item of applied) {
+          schedule = mergeTodayPlanIntoSchedule(
+            schedule,
+            buildTodayPlanFromFocus(item.focus, schedule),
+          );
+        }
+        return {
+          ...prev,
+          messages: [
+            ...prev.messages,
+            ...applied.flatMap((item) => [item.userMsg, item.assistantMsg]),
+          ],
+          todayFocus: applied[applied.length - 1].focus,
+          schedule,
+          externalIntakeIds: Array.from(
+            new Set([...prev.externalIntakeIds, ...applied.map((item) => item.id)]),
+          ).slice(-200),
+        };
+      });
+      setExternalSyncStatus(`已同步 ${applied.length} 条`);
+      return applied.length;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "同步失败";
+      setExternalSyncStatus(message);
+      console.warn("[LifeOS sync]", err);
+      return 0;
+    }
+  }, [state.externalIntakeIds, userContext]);
+
   // Persist on change (after hydration)
   useEffect(() => {
     if (!hydrated) return;
@@ -138,10 +281,19 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
     });
   }, [state, hydrated]);
 
-  const userContext: UserContext = useMemo(
-    () => ({ facts: state.facts, modules: state.modules }),
-    [state.facts, state.modules]
-  );
+  useEffect(() => {
+    if (!hydrated || !isLifeOSSyncConfigured()) return;
+    let cancelled = false;
+    const sync = () => {
+      if (!cancelled) void syncExternalIntakes();
+    };
+    sync();
+    const timer = setInterval(sync, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [hydrated, syncExternalIntakes]);
 
   const sendMessage = useMutation({
     mutationFn: async (input: {
@@ -159,6 +311,8 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
       };
 
       setState((prev) => ({ ...prev, messages: [...prev.messages, userMsg] }));
+      const intake = createLifeOSIntake(input.text, "capture");
+      void intake;
 
       const buildHistory = (records: ChatMessageRecord[]): ChatMessage[] =>
         records.map((m) => {
@@ -197,7 +351,7 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
         userMsg,
       ]);
 
-      const replyText = await coachReply({
+      const replyText = await captureReply({
         ctx: userContext,
         history: historyForReply,
       });
@@ -208,11 +362,21 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
         text: stripReplyTag(replyText),
         createdAt: Date.now(),
       };
+      const nextTodayFocus = parseTodayFocus(assistantMsg.text);
 
-      setState((prev) => ({
-        ...prev,
-        messages: [...prev.messages, assistantMsg],
-      }));
+      setState((prev) => {
+        const plan = nextTodayFocus
+          ? buildTodayPlanFromFocus(nextTodayFocus, prev.schedule)
+          : null;
+        return {
+          ...prev,
+          messages: [...prev.messages, assistantMsg],
+          todayFocus: nextTodayFocus ?? prev.todayFocus,
+          schedule: plan
+            ? mergeTodayPlanIntoSchedule(prev.schedule, plan)
+            : prev.schedule,
+        };
+      });
 
       const historyForAnalysis = buildHistory([
         ...state.messages.filter((m) => m.id !== "welcome"),
@@ -1377,6 +1541,15 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
 
   const [chatDraft, setChatDraft] = useState<string>("");
 
+  const resetLocalData = useCallback(async () => {
+    await AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+    setChatDraft("");
+    setState({
+      ...INITIAL_STATE,
+      messages: [WELCOME],
+    });
+  }, []);
+
   const logLifeState = useCallback((key: NowNeedKey) => {
     setState((prev) => {
       const next: LifeStates = { ...prev.lifeStates };
@@ -1411,10 +1584,15 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
       agents: state.agents,
       goals: state.goals,
       lifeStates: state.lifeStates,
+      todayFocus: state.todayFocus,
+      externalSyncConfigured: isLifeOSSyncConfigured(),
+      externalSyncStatus,
+      syncExternalIntakes,
       logLifeState,
       sendMessage,
       runAgent,
       clearChat,
+      resetLocalData,
       addGoal,
       toggleMilestone,
       toggleMilestoneTask,
@@ -1461,9 +1639,12 @@ export const [AuroraProvider, useAurora] = createContextHook(() => {
     [
       hydrated,
       state,
+      externalSyncStatus,
+      syncExternalIntakes,
       sendMessage,
       runAgent,
       clearChat,
+      resetLocalData,
       addGoal,
       toggleMilestone,
       toggleMilestoneTask,

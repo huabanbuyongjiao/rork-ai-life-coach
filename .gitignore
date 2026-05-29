@@ -1,4 +1,7 @@
 node_modules
 .env
+.env.local
 .expo
 .rork
+.DS_Store
+expo/server/data

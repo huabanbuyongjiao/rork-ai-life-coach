@@ -1,0 +1,37 @@
+{
+  "name": "lifeos_intake",
+  "description": "Push an important Claude conversation update into AI Life OS so it can update Now Card, Today Timeline, user state, tasks, deadlines, and constraints.",
+  "auth": {
+    "type": "header",
+    "headerName": "x-lifeos-token",
+    "description": "Shared token configured as LIFEOS_INTAKE_TOKEN on the deployed AIOS backend."
+  },
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["rawInput", "source"],
+    "properties": {
+      "rawInput": {
+        "type": "string",
+        "description": "The user's exact message or a concise excerpt that should update AIOS."
+      },
+      "source": {
+        "type": "string",
+        "enum": ["claude"]
+      },
+      "timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Current timestamp. If omitted, AIOS will use server time."
+      },
+      "conversationSummary": {
+        "type": "string",
+        "description": "Short context summary when the raw input depends on earlier conversation."
+      },
+      "externalConversationId": {
+        "type": "string",
+        "description": "Optional Claude conversation identifier or user-visible reference."
+      }
+    }
+  }
+}

@@ -25,6 +25,7 @@ export function isSupabaseConfigured(): boolean {
 function warnOnce(): void {
   if (_warned) return;
   _warned = true;
+  if (process.env.EXPO_PUBLIC_SHOW_BACKEND_WARNINGS !== "1") return;
   console.warn("[supabase]", MISSING_ENV_ERROR.message);
 }
 
@@ -103,7 +104,7 @@ function getClient(): SupabaseClient {
 export const supabase = new Proxy({} as SupabaseClient, {
   get(_target, prop) {
     const client = getClient();
-    const value = (client as Record<string | symbol, unknown>)[prop];
+    const value = (client as unknown as Record<string | symbol, unknown>)[prop];
     if (typeof value === "function") {
       return (value as Function).bind(client);
     }
